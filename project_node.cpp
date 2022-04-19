@@ -1,3 +1,9 @@
+#include "position.h"
+#include <iostream>
+using namespace std;
+
+#include <vector>
+
 #include "ros/ros.h"
 #include "ros/time.h"
 #include "sensor_msgs/LaserScan.h"
@@ -13,11 +19,12 @@
 #include "nav_msgs/GetMap.h"
 #include "nav_msgs/SetMap.h"
 
-using namespace std;
 
 #define angle_resolution 5//in degrees
 #define distance_to_travel 1
 #define angle_to_travel 20
+#define precision 256
+#define score_threshold 100
 
 #define uncertainty 0.05
 
@@ -45,6 +52,7 @@ private:
     float cell_size;
     int width_max;
     int height_max;
+    float ratio;
 
     // GRAPHICAL DISPLAY
     int nb_pts;
@@ -59,6 +67,7 @@ private:
 
     //to store the predicted and estimated position of the mobile robot
     bool localization_initialized;
+    vector<Position> valid_points;
     geometry_msgs::Point final_predicted_position[16];
     float final_predicted_orientation[16];
     geometry_msgs::Point estimated_position[16];
@@ -96,6 +105,7 @@ project_node() {
 
     width_max = resp.map.info.width;
     height_max = resp.map.info.height;
+    ratio = width_max / height_max;
     cell_size = resp.map.info.resolution;
     min.x = resp.map.info.origin.position.x;
     min.y = resp.map.info.origin.position.y;
@@ -138,17 +148,129 @@ void update() {
 void estimate_localization(){
     int length_count, height_count;
     int valid_nodes_count;
-    first_filter(&length_count, &height_count, &valid_nodes_count);
+    float interval = 0.0;
+    valid_points = first_filter(&length_count, &height_count, &interval, &valid_nodes_count);
+    int step = 1;
     while(valid_nodes_count < 16){
-        second_filter(&valid_nodes_count);
+        valid_points = second_filter(&valid_nodes_count, step);
+        step++;
     }
 }
+vector<Position> first_filter(int *length_count, int *height_count, float *interval, int *valid_points_count){
+    if(ratio < 1.0)
+        *interval = (height_max + 0.0) / precision;
+    else
+        *interval = (width_max + 0.0) / precision;
 
-geometry_msgs::Point *first_filter(int *length_count, int *height_count, int *valid_nodes_count){
+    *length_count = width_max / *interval;
+    *height_count = height_max / *interval;
 
+    int score = 0;
+    vector<Position> valid_points;
+    for(float currentX = 0.0; currentX <= width_max; currentX+=interval){
+        for (float currentY = 0.0; currentY <= height_max; currentY+=interval){
+            // Verify point valid or not
+            if ( cell_value(currentX, currentY) == 0 ) {
+                int highest_score = 0;
+                float rad_for_highest_score = 0.0;
+                for(float rad = -135 * M_PI / 180; rad <= M_PI / 180; rad += (45 * M_PI / 180)){
+                    score = calculate_score(currentX, currentY, rad);
+                    if(score >= score_threshold) {
+                        if(score > highest_score){
+                            highest_score = score;
+                            rad_for_highest_score = rad;
+                        }   
+                    }
+                }
+                if(highest_score > 0){ // this handles the first time because otherwise the initial pts won't be updated
+                    Position p = new Position(currentX, currentY, rad_for_highest_score);
+                    valid_points.push(p);
+                }
+            }
+        }
+    }
+    *valid_points_count = valid_points.size();
+    return valid_points;
 }
 
-void second_filter(geometry_msgs::Point *valid_points, int *valid_nodes_count){
+vector<Position> second_filter(int *valid_nodes_count, int step){
+    float x, y;
+    float angle;
+    vector<Position> updated_points;
+    for(int i=0; i<valid_points.size(); i++){
+        x = valid_points[i].getPoint().x;
+        y = valid_points[i].getPoint().y;
+        angle = valid_points[i].getAngle();
+        geometry_msgs::Point pts[5];
+
+        pts[0].x = x;
+        pts[0].y = y - 1/3 * intervals;
+
+        pts[1].x = x - 1/3 * intervals;
+        pts[1].y = y;
+
+        pts[2].x = x;
+        pts[2].y = y;
+
+        pts[3].x = x + 1/3 * intervals;
+        pts[3].y = y ;
+
+        pts[4].x = x;
+        pts[4].y = y + 1/3 * intervals;
+
+        float min_orientation = angle - 90 * M_PI / 180;
+        float max_orientation = angle + 90 * M_PI / 180;
+        
+        float step = 30 * M_PI / 180;
+        for(int m=0; m<5; m++){
+            int score = 0, max_score = 0;
+            float rad_of_max_score = 0.0;
+
+            for(float rad = min_orientation; rad <= max_orientation; rad+=step){
+                score = calculate_score(pts[m].x, pts[m].y, rad);
+                if(score > max_score){
+                    max_score = score;
+                    rad_of_max_score = rad;
+                }
+            }
+
+            Position p = new Position(pts[m].x, pts[m].y, rad_of_max_score);
+            updated_points.push(p);
+        }
+    }
+    // todo:
+    // 0. create a new list of pts of interest 
+    // 1. check the score for each pt, if it's below a certain score, dismiss (aka don't append to list of pts of interest) 
+    // 2. return the list of pts of interest 
+    vector<Position> interest_points;
+    vector<int> scores_interest;
+    
+    // 0. create a vector called 'scoreInts' 
+    for (int i = 0; i<updated_points.size(); i++)
+        // 1. Loop over the update pts and read for each pt its corresponding score
+        scores_interest.push(updated_points[i].getScore());
+
+    sort(scores_interest.begin(), scores_interest.end(), greater<int>()); // sorts vector in descending order 
+    int high_ninty_five = scores_interest[scores_interest.size() / 20]; // to get the 5th -> 100/20 = 5 -> this will be the threshold 
+
+    for (int i = 0; i<updated_points.size(); i++){
+        if(updated_points[i].getScore() >= high_ninty_five){
+            interest_points.push(updated_points[i]);
+        }
+    }
+
+    return interest_points;
+
+
+
+    // 2. store the corresponding score in the vector scoreints (append scoreInts)
+    // 3. now that we have scoreInts vector of only integers which are the scores
+    // 4. we can sort in descending order that list 
+    // 5. and then we can get another loop to do the top 5 most percent:
+        // 5.0 top-5 list 
+        // 5.1 you loop over the updatepts 
+        // 5.2 only get pts with corresponding scores -- if they match 
+        // 5.3 append that list, return it 
 
 }
 
@@ -225,7 +347,24 @@ int calculate_score(float x, float y, float o)
         nb_pts++;
     }
 
-return(score_current);
+    return(score_current);
+
+}
+
+int cell_value(float x, float y) {
+//returns the value of the cell corresponding to the position (x, y) in the map
+//returns 100 if cell(x, y) is occupied, 0 if cell(x, y) is free
+
+    if ( ( min.x <= x ) && ( x <= max.x ) && ( min.y <= y ) && ( y <= max.y ) ) {
+        float x_cell = (x-min.x)/cell_size;
+        float y_cell = (y-min.y)/cell_size;
+        int x_int = x_cell;
+        int y_int = y_cell;
+        //ROS_INFO("cell[%f = %d][%f = %d] = %d", x_cell, x_int, y_cell, y_int, map[x_int][y_int]);
+        return(resp.map.data[width_max*y_int+x_int]);
+    }
+    else
+        return(-1);
 
 }
 
