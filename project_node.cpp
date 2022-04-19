@@ -68,10 +68,8 @@ private:
     //to store the predicted and estimated position of the mobile robot
     bool localization_initialized;
     vector<Position> valid_points;
-    geometry_msgs::Point final_predicted_position[16];
-    float final_predicted_orientation[16];
-    geometry_msgs::Point estimated_position[16];
-    float estimated_orientation[16];
+    Position final_predicted_position[16];
+    Position estimated_position[16];
     
     // The weight of each iteration
     float weight[16];
@@ -151,11 +149,15 @@ void estimate_localization(){
     float interval = 0.0;
     valid_points = first_filter(&length_count, &height_count, &interval, &valid_nodes_count);
     int step = 1;
-    while(valid_nodes_count < 16){
-        valid_points = second_filter(&valid_nodes_count, step);
+    while(valid_nodes_count <= 16){
+        valid_points = second_filter(&valid_nodes_count, interval, step);
         step++;
     }
+    for(int i=0; i<valid_nodes_count; i++){
+        final_predicted_position[i] = valid_points[i];
+    }
 }
+
 vector<Position> first_filter(int *length_count, int *height_count, float *interval, int *valid_points_count){
     if(ratio < 1.0)
         *interval = (height_max + 0.0) / precision;
@@ -193,7 +195,7 @@ vector<Position> first_filter(int *length_count, int *height_count, float *inter
     return valid_points;
 }
 
-vector<Position> second_filter(int *valid_nodes_count, int step){
+vector<Position> second_filter(int *valid_nodes_count, int interval, int step){
     float x, y;
     float angle;
     vector<Position> updated_points;
@@ -202,26 +204,27 @@ vector<Position> second_filter(int *valid_nodes_count, int step){
         y = valid_points[i].getPoint().y;
         angle = valid_points[i].getAngle();
         geometry_msgs::Point pts[5];
+        float new_interval = interval / pow(3, step);
 
         pts[0].x = x;
-        pts[0].y = y - 1/3 * intervals;
+        pts[0].y = y - new_interval;
 
-        pts[1].x = x - 1/3 * intervals;
+        pts[1].x = x - new_interval;
         pts[1].y = y;
 
         pts[2].x = x;
         pts[2].y = y;
 
-        pts[3].x = x + 1/3 * intervals;
+        pts[3].x = x + new_interval;
         pts[3].y = y ;
 
         pts[4].x = x;
-        pts[4].y = y + 1/3 * intervals;
+        pts[4].y = y + new_interval;
 
-        float min_orientation = angle - 90 * M_PI / 180;
-        float max_orientation = angle + 90 * M_PI / 180;
+        float min_orientation = angle - 180 * M_PI / 180 * pow(2, step);
+        float max_orientation = angle + 180 * M_PI / 180 * pow(2, step);
         
-        float step = 30 * M_PI / 180;
+        float step = 60 * M_PI / 180 * pow(2, step);
         for(int m=0; m<5; m++){
             int score = 0, max_score = 0;
             float rad_of_max_score = 0.0;
@@ -258,10 +261,10 @@ vector<Position> second_filter(int *valid_nodes_count, int step){
             interest_points.push(updated_points[i]);
         }
     }
-
+    *valid_nodes_count = interest_points.size();
     return interest_points;
 
-
+;;
 
     // 2. store the corresponding score in the vector scoreints (append scoreInts)
     // 3. now that we have scoreInts vector of only integers which are the scores
