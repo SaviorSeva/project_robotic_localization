@@ -240,7 +240,7 @@ void predict_position() {
 
 }
 
-void estimate_position() {
+void estimate_position() { 
 // initialize_localization should work before you implement this method
 
     ROS_INFO("estimate_position");

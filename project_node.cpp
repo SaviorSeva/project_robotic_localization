@@ -68,8 +68,10 @@ private:
     //to store the predicted and estimated position of the mobile robot
     bool localization_initialized;
     vector<Position> valid_points;
+    int valid_nodes_count;
     Position final_predicted_position[16];
-    Position estimated_position[16];
+    Position final_estimated_position[16];
+    Position robot_position; // changed every time robot moves, and at the initialisation
     
     // The weight of each iteration
     float weight[16];
@@ -114,6 +116,8 @@ project_node() {
     ROS_INFO("Map: (%f, %f) -> (%f, %f) with size: %f",min.x, min.y, max.x, max.y, cell_size);
     ROS_INFO("wait for initial pose");
 
+    robot_position = new Position(0, 0, 0, 0);
+
     //INFINTE LOOP TO COLLECT LASER DATA AND PROCESS THEM
     ros::Rate r(10);// this node will work at 10hz
     while (ros::ok()) {
@@ -132,12 +136,16 @@ void update() {
         if ( !localization_initialized ) {
             estimate_localization();
             localization_initialized = true;
+            construct_weight();
             return; 
         }
-
+        
+        
         if ((distance_traveled > distance_to_travel ) || (fabs(angle_traveled*180/M_PI) > angle_to_travel))
         {
-            update_position();
+            bool result = update_position();
+            if(result) update_weight();
+            else localization_initialized = false;
         }
     }
 
@@ -145,7 +153,7 @@ void update() {
 
 void estimate_localization(){
     int length_count, height_count;
-    int valid_nodes_count;
+
     float interval = 0.0;
     valid_points = first_filter(&length_count, &height_count, &interval, &valid_nodes_count);
     int step = 1;
@@ -153,9 +161,14 @@ void estimate_localization(){
         valid_points = second_filter(&valid_nodes_count, interval, step);
         step++;
     }
+
     for(int i=0; i<valid_nodes_count; i++){
         final_predicted_position[i] = valid_points[i];
+        if(final_predicted_position[i].getScore() > robot_position.getScore()){
+            robot_position = final_predicted_position[i];
+        }
     }
+    
 }
 
 vector<Position> first_filter(int *length_count, int *height_count, float *interval, int *valid_points_count){
@@ -241,7 +254,6 @@ vector<Position> second_filter(int *valid_nodes_count, int interval, int step){
             updated_points.push(p);
         }
     }
-    // todo:
     // 0. create a new list of pts of interest 
     // 1. check the score for each pt, if it's below a certain score, dismiss (aka don't append to list of pts of interest) 
     // 2. return the list of pts of interest 
@@ -264,7 +276,6 @@ vector<Position> second_filter(int *valid_nodes_count, int interval, int step){
     *valid_nodes_count = interest_points.size();
     return interest_points;
 
-;;
 
     // 2. store the corresponding score in the vector scoreints (append scoreInts)
     // 3. now that we have scoreInts vector of only integers which are the scores
@@ -275,6 +286,76 @@ vector<Position> second_filter(int *valid_nodes_count, int interval, int step){
         // 5.2 only get pts with corresponding scores -- if they match 
         // 5.3 append that list, return it 
 
+}
+
+void construct_weight(){ // when the 16 points are generated we calculate the weights of them (pts after the 1st and 2nd filters)
+    int highScore = 0;
+    for(int i=0; i<valid_nodes_count; i++){ // we get the highest score of all the points
+        if(final_predicted_position[i].getScore() > highScore) 
+            highScore = final_predicted_position[i].getScore(); 
+    }
+    for(int i=0; i<valid_nodes_count; i++){ // we calculate the weights 
+        weight[i] = (final_predicted_position[i].getScore() + 0.0) / highScore;
+    }
+}
+
+void update_weight(){ // when the 16 points are generated we calculate the weights of them (pts after the 1st and 2nd filters)
+    int highWScore = 0;
+    for(int i=0; i<valid_nodes_count; i++){ // we get the highest weighted score of all the points
+        if(final_estimated_position[i].getScore() * weight[i] > highWScore) 
+            highWScore = final_estimated_position[i].getScore() * weight[i]; 
+    }
+    for(int i=0; i<valid_nodes_count; i++){ // we calculate the weights 
+        weight[i] = final_estimated_position[i].getScore() * weight[i] / highWScore;
+        if(weight[i] == 1.0) robot_position = final_estimated_position[i];
+    }
+}
+
+bool update_position(){ // estimate all the positions for the 16 pts
+    ROS_INFO("update_position");
+
+    //estimation of the positions closed to the predicted_position
+    //we search the position with the highest sensor_model in a square of 1x1 meter around the predicted_position and with orientations around the predicted_orientation -M_PI/6 and +M_PI/6
+    float min_x, max_x, min_y, max_y, min_orientation, max_orientation;
+    for(int i=0; i<valid_nodes_count; i++){
+ //initialization of score_max with the predicted_position
+        int score_max = calculate_score(final_predicted_position[i].getPoint().x , final_predicted_position[i].getPoint().y, final_predicted_position[i].getAngle());
+        Position newP = new Position(final_predicted_position[i].getPoint().x, final_predicted_position[i].getPoint().y, final_predicted_position[i].getAngle(), score_max);
+
+        min_x = final_predicted_position[i].getPoint().x - 0.5;
+        max_x = final_predicted_position[i].getPoint().x + 0.5;
+        min_y = final_predicted_position[i].getPoint().y - 0.5;
+        max_y = final_predicted_position[i].getPoint().y + 0.5;
+        min_orientation = final_predicted_position[i].getAngle() - M_PI/6;			// Lowest angle is -30 degree
+        max_orientation = final_predicted_position[i].getAngle() + M_PI/6;			// Highest angle is 30 degree
+
+        for(float x = min_x; x <= max_x; x+=0.05){
+            for(float y = min_y; y <= max_y; y+=0.05){
+                if ( cell_value(x, y) == 0 ) { // robair can only be at a free cell
+                    for(float rad = min_orientation; rad <= max_orientation; rad += (5 * M_PI / 180)){
+                        int score_current = calculate_score(x, y, rad);
+                        ROS_INFO("(%f, %f, %f): score = %i", x, y, rad*180/M_PI, score_current);
+                        //we store the maximum score over all the possible positions in estimated_position
+
+                        if( score_current > score_max ){
+                            score_max = score_current;
+                            newP.setPoint(x, y);
+                            newP.setAngle(rad);
+                            newP.setScore(score_current)
+                        }
+                    }
+                }
+            }
+        }
+        final_estimated_position[i] = newP;
+    }  
+    int max_score = 0;
+    for(int i=0; i<valid_nodes_count; i++){
+        if(final_estimated_position[i].getScore() > max_score)
+            max_score = final_estimated_position[i].getScore();
+    }
+    if(max_score >= score_threshold) return true;
+    else return false;
 }
 
 int calculate_score(float x, float y, float o)
@@ -349,9 +430,7 @@ int calculate_score(float x, float y, float o)
         }
         nb_pts++;
     }
-
     return(score_current);
-
 }
 
 int cell_value(float x, float y) {
