@@ -1,4 +1,4 @@
-#include "position.h"
+
 #include <iostream>
 using namespace std;
 
@@ -24,9 +24,64 @@ using namespace std;
 #define distance_to_travel 1
 #define angle_to_travel 20
 #define precision 256
-#define score_threshold 100
+#define score_threshold 25
 
 #define uncertainty 0.05
+
+class Pos_Ori {
+    private : 
+        geometry_msgs::Point point;
+        float angle;
+        int score;
+    
+    public :
+        Pos_Ori(float x, float y, float radian){
+            point.x = x;
+            point.y = y;
+            angle = radian;
+            score = 0.0;
+        }
+
+        Pos_Ori(float x, float y, float radian, int sc){
+            point.x = x;
+            point.y = y;
+            angle = radian;
+            score = sc;
+        }
+        
+        Pos_Ori(){
+            point.x = 0.0;
+            point.y = 0.0;
+            angle = 0.0;
+            score = 0;
+        }
+
+
+        geometry_msgs::Point getPoint(){
+            return point;
+        }
+
+        void setPoint(float x, float y){
+            point.x = x;
+            point.y = y;
+        }
+
+        float getAngle(){
+            return angle;
+        }
+
+        void setAngle(float radian){
+            angle = radian;
+        }
+
+        int getScore(){
+            return score;
+        }     
+        
+        void setScore(int s){
+            score = s;
+        }     
+};
 
 class project_node {
 
@@ -67,11 +122,11 @@ private:
 
     //to store the predicted and estimated position of the mobile robot
     bool localization_initialized;
-    vector<Position> valid_points;
+    vector<Pos_Ori> valid_points;
     int valid_nodes_count;
-    Position final_predicted_position[16];
-    Position final_estimated_position[16];
-    Position robot_position; // changed every time robot moves, and at the initialisation
+    Pos_Ori final_predicted_position[16];
+    Pos_Ori final_estimated_position[16];
+    Pos_Ori robot_position; // changed every time robot moves, and at the initialisation
     
     // The weight of each iteration
     float weight[16];
@@ -88,8 +143,6 @@ project_node() {
     sub_scan = n.subscribe("scan", 1, &project_node::scanCallback, this);
     sub_odometry = n.subscribe("odom", 1, &project_node::odomCallback, this);
     pub_localization_marker = n.advertise<visualization_msgs::Marker>("localization_marker", 1); // Preparing a topic to publish our results. This will be used by the visualization tool rviz
-    sub_position = n.subscribe("initialpose", 1, &project_node::positionCallback, this);
-
     // get map via RPC
     nav_msgs::GetMap::Request  req;
     ROS_INFO("Requesting the map...");
@@ -116,8 +169,6 @@ project_node() {
     ROS_INFO("Map: (%f, %f) -> (%f, %f) with size: %f",min.x, min.y, max.x, max.y, cell_size);
     ROS_INFO("wait for initial pose");
 
-    robot_position = new Position(0, 0, 0, 0);
-
     //INFINTE LOOP TO COLLECT LASER DATA AND PROCESS THEM
     ros::Rate r(10);// this node will work at 10hz
     while (ros::ok()) {
@@ -132,7 +183,7 @@ project_node() {
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////*/
 void update() {
 
-    if ( init_odom && init_laser && init_position ) {
+    if ( init_odom && init_laser ) {
         if ( !localization_initialized ) {
             estimate_localization();
             localization_initialized = true;
@@ -153,13 +204,16 @@ void update() {
 
 void estimate_localization(){
     int length_count, height_count;
-
     float interval = 0.0;
     valid_points = first_filter(&length_count, &height_count, &interval, &valid_nodes_count);
+    ROS_INFO("press enter to continue");
+    getchar();
     int step = 1;
-    while(valid_nodes_count <= 16){
+    while(valid_nodes_count >= 16){
         valid_points = second_filter(&valid_nodes_count, interval, step);
         step++;
+        ROS_INFO("press enter to continue");
+    	getchar();
     }
 
     for(int i=0; i<valid_nodes_count; i++){
@@ -171,24 +225,31 @@ void estimate_localization(){
     
 }
 
-vector<Position> first_filter(int *length_count, int *height_count, float *interval, int *valid_points_count){
+vector<Pos_Ori> first_filter(int *length_count, int *height_count, float *interval, int *valid_points_count){
+    float inter = 1.5;
     if(ratio < 1.0)
-        *interval = (height_max + 0.0) / precision;
+        inter = (max.x - min.x) / precision;
     else
-        *interval = (width_max + 0.0) / precision;
+        inter = (max.y - min.y) / precision;
 
-    *length_count = width_max / *interval;
-    *height_count = height_max / *interval;
-
+    *length_count = width_max / inter;
+    *height_count = height_max / inter;
+    *interval = inter;
+	
+    ROS_INFO("First filter starts with interval %f, with width = %d and height = %d ", inter, width_max, height_max);
+    ROS_INFO("press enter to continue");
+    getchar();
     int score = 0;
-    vector<Position> valid_points;
-    for(float currentX = 0.0; currentX <= width_max; currentX+=interval){
-        for (float currentY = 0.0; currentY <= height_max; currentY+=interval){
+    vector<Pos_Ori> valid_points;
+    for(float currentX = min.x; currentX < max.x; currentX = inter + currentX){
+    //ROS_INFO("currentX = %f", currentX);
+        for (float currentY = min.y; currentY < max.y; currentY = inter + currentY){
+            //ROS_INFO("currentY = %f", currentY);
             // Verify point valid or not
             if ( cell_value(currentX, currentY) == 0 ) {
                 int highest_score = 0;
                 float rad_for_highest_score = 0.0;
-                for(float rad = -135 * M_PI / 180; rad <= M_PI / 180; rad += (45 * M_PI / 180)){
+                for(float rad = -135 * M_PI / 180; rad <= 190 * M_PI / 180.0; rad += (45.0 * M_PI / 180)){
                     score = calculate_score(currentX, currentY, rad);
                     if(score >= score_threshold) {
                         if(score > highest_score){
@@ -198,20 +259,24 @@ vector<Position> first_filter(int *length_count, int *height_count, float *inter
                     }
                 }
                 if(highest_score > 0){ // this handles the first time because otherwise the initial pts won't be updated
-                    Position p = new Position(currentX, currentY, rad_for_highest_score);
-                    valid_points.push(p);
+                    Pos_Ori *p = new Pos_Ori(currentX, currentY, rad_for_highest_score, highest_score);
+                    valid_points.push_back(*p);
                 }
             }
         }
     }
     *valid_points_count = valid_points.size();
+    ROS_INFO("Nb points left : %d\n", *valid_points_count);
+    
     return valid_points;
 }
 
-vector<Position> second_filter(int *valid_nodes_count, int interval, int step){
+vector<Pos_Ori> second_filter(int *valid_nodes_count, int interval, int step){
+    ROS_INFO("Second filter starts with %d node with step = %f;\n", *valid_nodes_count, (60 * M_PI) / (180 * pow(2, step)));
+ 	
     float x, y;
     float angle;
-    vector<Position> updated_points;
+    vector<Pos_Ori> updated_points;
     for(int i=0; i<valid_points.size(); i++){
         x = valid_points[i].getPoint().x;
         y = valid_points[i].getPoint().y;
@@ -234,15 +299,15 @@ vector<Position> second_filter(int *valid_nodes_count, int interval, int step){
         pts[4].x = x;
         pts[4].y = y + new_interval;
 
-        float min_orientation = angle - 180 * M_PI / 180 * pow(2, step);
-        float max_orientation = angle + 180 * M_PI / 180 * pow(2, step);
+        float min_orientation = angle - (180 * M_PI) / (180 * pow(2, step));
+        float max_orientation = angle + (180 * M_PI) / (180 * pow(2, step));
         
-        float step = 60 * M_PI / 180 * pow(2, step);
+        float step = (60 * M_PI) / (180 * pow(2, step));
         for(int m=0; m<5; m++){
             int score = 0, max_score = 0;
             float rad_of_max_score = 0.0;
 
-            for(float rad = min_orientation; rad <= max_orientation; rad+=step){
+            for(float rad = min_orientation; rad <= max_orientation; rad = rad + step){
                 score = calculate_score(pts[m].x, pts[m].y, rad);
                 if(score > max_score){
                     max_score = score;
@@ -250,30 +315,36 @@ vector<Position> second_filter(int *valid_nodes_count, int interval, int step){
                 }
             }
 
-            Position p = new Position(pts[m].x, pts[m].y, rad_of_max_score);
-            updated_points.push(p);
+            Pos_Ori *p = new Pos_Ori(pts[m].x, pts[m].y, rad_of_max_score, max_score);
+            updated_points.push_back(*p);	
         }
     }
+    
     // 0. create a new list of pts of interest 
     // 1. check the score for each pt, if it's below a certain score, dismiss (aka don't append to list of pts of interest) 
     // 2. return the list of pts of interest 
-    vector<Position> interest_points;
+    vector<Pos_Ori> interest_points;
     vector<int> scores_interest;
     
     // 0. create a vector called 'scoreInts' 
-    for (int i = 0; i<updated_points.size(); i++)
+    for (int i = 0; i<updated_points.size(); i++){
         // 1. Loop over the update pts and read for each pt its corresponding score
-        scores_interest.push(updated_points[i].getScore());
+        scores_interest.push_back(updated_points[i].getScore());
+        ROS_INFO("score[%d] : %d", i, updated_points[i].getScore());
+    }
 
     sort(scores_interest.begin(), scores_interest.end(), greater<int>()); // sorts vector in descending order 
-    int high_ninty_five = scores_interest[scores_interest.size() / 20]; // to get the 5th -> 100/20 = 5 -> this will be the threshold 
+    ROS_INFO("size of scores_interest = %ld", scores_interest.size());
 
+    int high_ninty_five = scores_interest[scores_interest.size() / 20]; // to get the 5th -> 100/20 = 5 -> this will be the threshold 
+	ROS_INFO("Filtering point with scores less than %d\n", high_ninty_five);
     for (int i = 0; i<updated_points.size(); i++){
         if(updated_points[i].getScore() >= high_ninty_five){
-            interest_points.push(updated_points[i]);
+            interest_points.push_back(updated_points[i]);
         }
     }
     *valid_nodes_count = interest_points.size();
+    ROS_INFO("Nb points left : %d\n", *valid_nodes_count);
     return interest_points;
 
 
@@ -320,14 +391,14 @@ bool update_position(){ // estimate all the positions for the 16 pts
     for(int i=0; i<valid_nodes_count; i++){
  //initialization of score_max with the predicted_position
         int score_max = calculate_score(final_predicted_position[i].getPoint().x , final_predicted_position[i].getPoint().y, final_predicted_position[i].getAngle());
-        Position newP = new Position(final_predicted_position[i].getPoint().x, final_predicted_position[i].getPoint().y, final_predicted_position[i].getAngle(), score_max);
+        Pos_Ori *newP = new Pos_Ori(final_predicted_position[i].getPoint().x, final_predicted_position[i].getPoint().y, final_predicted_position[i].getAngle(), score_max);
 
         min_x = final_predicted_position[i].getPoint().x - 0.5;
         max_x = final_predicted_position[i].getPoint().x + 0.5;
         min_y = final_predicted_position[i].getPoint().y - 0.5;
         max_y = final_predicted_position[i].getPoint().y + 0.5;
-        min_orientation = final_predicted_position[i].getAngle() - M_PI/6;			// Lowest angle is -30 degree
-        max_orientation = final_predicted_position[i].getAngle() + M_PI/6;			// Highest angle is 30 degree
+        min_orientation = final_predicted_position[i].getAngle() - 30.0 * M_PI/180.0;			// Lowest angle is -30 degree
+        max_orientation = final_predicted_position[i].getAngle() + 30.0 * M_PI/180.0;			// Highest angle is 30 degree
 
         for(float x = min_x; x <= max_x; x+=0.05){
             for(float y = min_y; y <= max_y; y+=0.05){
@@ -339,15 +410,15 @@ bool update_position(){ // estimate all the positions for the 16 pts
 
                         if( score_current > score_max ){
                             score_max = score_current;
-                            newP.setPoint(x, y);
-                            newP.setAngle(rad);
-                            newP.setScore(score_current)
+                            newP->setPoint(x, y);
+                            newP->setAngle(rad);
+                            newP->setScore(score_current);
                         }
                     }
                 }
             }
         }
-        final_estimated_position[i] = newP;
+        final_estimated_position[i] = *newP;
     }  
     int max_score = 0;
     for(int i=0; i<valid_nodes_count; i++){
@@ -361,7 +432,7 @@ bool update_position(){ // estimate all the positions for the 16 pts
 int calculate_score(float x, float y, float o)
 {
 //compute the score of the position (x, y, o)
-	ROS_INFO("sensor_model(%f, %f, %f)", x, y, o*180/M_PI);
+	ROS_INFO("calculate_score(%f, %f, %f)", x, y, o*180/M_PI);
     nb_pts = 0;
     // we add the current hit to the hits to display
     display[nb_pts].x = x;
@@ -442,7 +513,7 @@ int cell_value(float x, float y) {
         float y_cell = (y-min.y)/cell_size;
         int x_int = x_cell;
         int y_int = y_cell;
-        //ROS_INFO("cell[%f = %d][%f = %d] = %d", x_cell, x_int, y_cell, y_int, map[x_int][y_int]);
+        //ROS_INFO("cell_value(%f, %f) at cell %d", x, y, width_max*y_int+x_int);
         return(resp.map.data[width_max*y_int+x_int]);
     }
     else
@@ -490,14 +561,14 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr& o) {
 
 }//odomCallback
 
-void positionCallback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& p) {
+//void positionCallback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& p) {
 
-    init_position = true;
-    initial_position.x = p->pose.pose.position.x;
-    initial_position.y = p->pose.pose.position.y;
-    initial_orientation = tf::getYaw(p->pose.pose.orientation);
+//    init_position = true;
+ //   initial_position.x = p->pose.pose.position.x;
+ //   initial_position.y = p->pose.pose.position.y;
+//    initial_orientation = tf::getYaw(p->pose.pose.orientation);
 
-}
+//}
 
 //GRAPHICAL_DISPLAY
 /*//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
