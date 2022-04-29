@@ -164,6 +164,7 @@ project_node() {
     min.y = resp.map.info.origin.position.y;
     max.x = min.x + width_max*cell_size;
     max.y = min.y + height_max*cell_size;
+    valid_nodes_count = 0;
 
     ROS_INFO("map loaded");
     ROS_INFO("Map: (%f, %f) -> (%f, %f) with size: %f",min.x, min.y, max.x, max.y, cell_size);
@@ -205,7 +206,7 @@ void update() {
 void estimate_localization(){
     int length_count, height_count;
     float interval = 0.0;
-    valid_points = first_filter(&length_count, &height_count, &interval, &valid_nodes_count);
+    valid_points = first_filter(&length_count, &height_count, &interval);
     ROS_INFO("press enter to continue");
     getchar();
     int step = 1;
@@ -225,7 +226,7 @@ void estimate_localization(){
     
 }
 
-vector<Pos_Ori> first_filter(int *length_count, int *height_count, float *interval, int *valid_points_count){
+vector<Pos_Ori> first_filter(int *length_count, int *height_count, float *interval){
     float inter = 1.5;
     if(ratio < 1.0)
         inter = (max.x - min.x) / precision;
@@ -265,13 +266,13 @@ vector<Pos_Ori> first_filter(int *length_count, int *height_count, float *interv
             }
         }
     }
-    *valid_points_count = valid_points.size();
+    valid_nodes_count = valid_points.size();
     ROS_INFO("Nb points left : %d\n", *valid_points_count);
     
     return valid_points;
 }
 
-vector<Pos_Ori> second_filter(int *valid_nodes_count, int interval, int step){
+vector<Pos_Ori> second_filter(int interval, int step){
     ROS_INFO("Second filter starts with %d node with step = %f;\n", *valid_nodes_count, (60 * M_PI) / (180 * pow(2, step)));
  	
     float x, y;
@@ -343,7 +344,7 @@ vector<Pos_Ori> second_filter(int *valid_nodes_count, int interval, int step){
             interest_points.push_back(updated_points[i]);
         }
     }
-    *valid_nodes_count = interest_points.size();
+    valid_nodes_count = interest_points.size();
     ROS_INFO("Nb points left : %d\n", *valid_nodes_count);
     return interest_points;
 
