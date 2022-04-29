@@ -309,7 +309,8 @@ vector<Pos_Ori> second_filter(int interval, int step){
             float rad_of_max_score = 0.0;
 
             for(float rad = min_orientation; rad <= max_orientation; rad = rad + step){
-                score = calculate_score(pts[m].x, pts[m].y, rad);
+		ROS_INFO("Info : m = %d, pts[m] = (%f, %f), rad = %f", m, pts[m].x, pts[m].y, rad);
+		score = calculate_score(pts[m].x, pts[m].y, rad);
                 if(score > max_score){
                     max_score = score;
                     rad_of_max_score = rad;
@@ -405,7 +406,7 @@ bool update_position(){ // estimate all the positions for the 16 pts
             for(float y = min_y; y <= max_y; y+=0.05){
                 if ( cell_value(x, y) == 0 ) { // robair can only be at a free cell
                     for(float rad = min_orientation; rad <= max_orientation; rad += (5 * M_PI / 180)){
-                        int score_current = calculate_score(x, y, rad);
+			int score_current = calculate_score(x, y, rad);
                         ROS_INFO("(%f, %f, %f): score = %i", x, y, rad*180/M_PI, score_current);
                         //we store the maximum score over all the possible positions in estimated_position
 
