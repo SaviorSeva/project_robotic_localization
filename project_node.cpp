@@ -1,4 +1,3 @@
-
 #include <iostream>
 using namespace std;
 
@@ -185,16 +184,31 @@ project_node() {
 void update() {
 
     if ( init_odom && init_laser ) {
+        previous_distance_traveled = distance_traveled;
+        previous_angle_traveled = angle_traveled;
+
+        distance_traveled = distancePoints(odom_current, odom_last);
+        angle_traveled = odom_current_orientation-odom_last_orientation;
+        if ( angle_traveled < -M_PI )
+            angle_traveled += 2*M_PI;
+        if ( angle_traveled > M_PI )
+            angle_traveled -= 2*M_PI;
+                
+        if ( ( distance_traveled  != previous_distance_traveled ) || ( angle_traveled != previous_angle_traveled ) )
+            ROS_INFO("distance_traveled = %f, angle_traveled = %f since last localization", distance_traveled, angle_traveled*180/M_PI);
+        
         if ( !localization_initialized ) {
             estimate_localization();
             localization_initialized = true;
             construct_weight();
+            ROS_INFO("Init finished");
             return; 
-        }
-        
-        
-        if ((distance_traveled > distance_to_travel ) || (fabs(angle_traveled*180/M_PI) > angle_to_travel))
+    	}
+    	
+        if ( ( distance_traveled > distance_to_travel ) || ( fabs(angle_traveled*180/M_PI) > angle_to_travel ) )
         {
+        	ROS_INFO("dt=%f, dtt=%d, at=%f, att=%d", distance_traveled, distance_to_travel, fabs(angle_traveled*180/M_PI), angle_to_travel);
+        	getchar();
             bool result = update_position();
             if(result) update_weight();
             else localization_initialized = false;
@@ -211,9 +225,9 @@ void estimate_localization(){
     getchar();
     int step = 1;
     while(valid_nodes_count >= 16){
-        valid_points = second_filter(&valid_nodes_count, interval, step);
+        valid_points = second_filter(interval, step);
         step++;
-        ROS_INFO("press enter to continue");
+        ROS_INFO("valid_nodes_count = %d, press enter to continue", valid_nodes_count);
     	getchar();
     }
 
@@ -267,23 +281,24 @@ vector<Pos_Ori> first_filter(int *length_count, int *height_count, float *interv
         }
     }
     valid_nodes_count = valid_points.size();
-    ROS_INFO("Nb points left : %d\n", *valid_points_count);
+    ROS_INFO("Nb points left : %d\n", valid_nodes_count);
     
     return valid_points;
 }
 
-vector<Pos_Ori> second_filter(int interval, int step){
-    ROS_INFO("Second filter starts with %d node with step = %f;\n", *valid_nodes_count, (60 * M_PI) / (180 * pow(2, step)));
- 	
+vector<Pos_Ori> second_filter(float interval, int step){
+    ROS_INFO("Second filter starts with %d node with step = %f;\n", valid_nodes_count, (60 * M_PI) / (180 * pow(2, step)));	
     float x, y;
     float angle;
     vector<Pos_Ori> updated_points;
+    
     for(int i=0; i<valid_points.size(); i++){
         x = valid_points[i].getPoint().x;
         y = valid_points[i].getPoint().y;
         angle = valid_points[i].getAngle();
         geometry_msgs::Point pts[5];
         float new_interval = interval / pow(3, step);
+        //ROS_INFO("new_interval = %f", new_interval);
 
         pts[0].x = x;
         pts[0].y = y - new_interval;
@@ -303,17 +318,16 @@ vector<Pos_Ori> second_filter(int interval, int step){
         float min_orientation = angle - (180 * M_PI) / (180 * pow(2, step));
         float max_orientation = angle + (180 * M_PI) / (180 * pow(2, step));
         
-        float step = (60 * M_PI) / (180 * pow(2, step));
+        float steppy = (60.0 * M_PI) / (180 * pow(2, step));
         for(int m=0; m<5; m++){
             int score = 0, max_score = 0;
             float rad_of_max_score = 0.0;
-
-            for(float rad = min_orientation; rad <= max_orientation; rad = rad + step){
-		ROS_INFO("Info : m = %d, pts[m] = (%f, %f), rad = %f", m, pts[m].x, pts[m].y, rad);
-		score = calculate_score(pts[m].x, pts[m].y, rad);
-                if(score > max_score){
-                    max_score = score;
-                    rad_of_max_score = rad;
+            for(float rad = min_orientation; rad <= max_orientation; rad = rad + steppy){
+				//ROS_INFO("Info : m = %d, pts[m] = (%f, %f), rad = %f, steppy=%f", m, pts[m].x, pts[m].y, rad, steppy);
+				score = calculate_score(pts[m].x, pts[m].y, rad);
+		        if(score > max_score){
+		            max_score = score;
+		            rad_of_max_score = rad;
                 }
             }
 
@@ -346,7 +360,7 @@ vector<Pos_Ori> second_filter(int interval, int step){
         }
     }
     valid_nodes_count = interest_points.size();
-    ROS_INFO("Nb points left : %d\n", *valid_nodes_count);
+    ROS_INFO("Nb points left : %d\n", valid_nodes_count);
     return interest_points;
 
 
@@ -392,6 +406,7 @@ bool update_position(){ // estimate all the positions for the 16 pts
     float min_x, max_x, min_y, max_y, min_orientation, max_orientation;
     for(int i=0; i<valid_nodes_count; i++){
  //initialization of score_max with the predicted_position
+ 		ROS_INFO("MAIN FOR LOOP");
         int score_max = calculate_score(final_predicted_position[i].getPoint().x , final_predicted_position[i].getPoint().y, final_predicted_position[i].getAngle());
         Pos_Ori *newP = new Pos_Ori(final_predicted_position[i].getPoint().x, final_predicted_position[i].getPoint().y, final_predicted_position[i].getAngle(), score_max);
 
@@ -404,10 +419,11 @@ bool update_position(){ // estimate all the positions for the 16 pts
 
         for(float x = min_x; x <= max_x; x+=0.05){
             for(float y = min_y; y <= max_y; y+=0.05){
+            ROS_INFO("pos(%f, %f) in range (%f, %f) to (%f, %f)", x, y, min_x, min_y, max_x, max_y);
                 if ( cell_value(x, y) == 0 ) { // robair can only be at a free cell
-                    for(float rad = min_orientation; rad <= max_orientation; rad += (5 * M_PI / 180)){
-			int score_current = calculate_score(x, y, rad);
-                        ROS_INFO("(%f, %f, %f): score = %i", x, y, rad*180/M_PI, score_current);
+                    for(float rad = min_orientation; rad <= max_orientation; rad += ((5.0 * M_PI) / 180)){
+						ROS_INFO("rad = %f, range = (%f, %f)", rad, min_orientation, max_orientation);
+						int score_current = calculate_score(x, y, rad);
                         //we store the maximum score over all the possible positions in estimated_position
 
                         if( score_current > score_max ){
@@ -416,6 +432,7 @@ bool update_position(){ // estimate all the positions for the 16 pts
                             newP->setAngle(rad);
                             newP->setScore(score_current);
                         }
+                        //getchar();
                     }
                 }
             }
@@ -620,7 +637,7 @@ float distancePoints(geometry_msgs::Point pa, geometry_msgs::Point pb) {
 
     return sqrt(pow((pa.x-pb.x),2.0) + pow((pa.y-pb.y),2.0));
 
-}
+}	
 
 };
 
@@ -634,3 +651,4 @@ int main(int argc, char **argv){
 
     return 0;
 }
+
